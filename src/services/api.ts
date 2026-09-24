@@ -308,6 +308,28 @@ class ApiService {
       body: data ? JSON.stringify(data) : undefined,
     });
   }
+
+  /**
+   * Inspect the Soroban storage footprint for a contract function via the
+   * server-side inspection endpoint (envelope's read-only / read-write storage
+   * keys are appended before signing; see docs/soroban-footprints.md #517).
+   */
+  async fetchFootprint(
+    contractId: string,
+    functionName: string,
+    args: unknown[] = []
+  ): Promise<import('../types/index.js').SorobanFootprintInspectResponse> {
+    try {
+      const response = await this.post<import('../types/index.js').SorobanFootprintInspectResponse>(
+        '/api/soroban/footprint/inspect',
+        { contractId, functionName, args }
+      );
+      return response.data;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { success: false, error: message };
+    }
+  }
 }
 
 // Default interceptors for common use cases

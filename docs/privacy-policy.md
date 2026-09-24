@@ -48,10 +48,50 @@ Only the **processed blob** is sent:
 
 - Dimensions ≤1200px
 - No EXIF
-- MIME type `image/webp` or `image/jpeg`
+- MIME type `image/webp` or `image/jpeg` (`image/png` when an authenticity watermark is requested)
 - 80% quality
 
 The server and Soroban contract never see the original file, its GPS, or its camera identity.
+
+## Authenticity Watermark (opt-in)
+
+To let a responder or moderator confirm that a photo really came from a help
+request and was not altered afterwards, a photo can be **watermarked** before it
+leaves the device (`src/lib/watermark.ts`, enabled with
+`processImage(file, { watermark: {...} })`). It adds:
+
+1. **A visible caption** along the bottom edge: the capture timestamp and the
+   first 16 hex characters of a cryptographic timestamp hash
+   (`SHA-256(timestamp:nonce)`).
+2. **An invisible watermark** in the least-significant bits of the pixel colours,
+   holding the timestamp, a random nonce, the timestamp hash and a SHA-256
+   digest of the image's pixels. The digest is what makes edits detectable.
+
+The watermark ID (SHA-256 of that payload) is what gets recorded on the ledger.
+Checking a photo means extracting the payload, recomputing the pixel digest, and
+looking the ID up on the ledger (`verifyWatermark()`).
+
+### Location is off by default
+
+Photos are stripped of EXIF GPS on purpose, so the watermark **never includes
+coordinates unless the caller sets `includeLocation: true` and passes a
+location**. Even then coordinates are rounded to two decimal places (about
+1.1 km) before being drawn or embedded, and the exact position is never stored.
+Do not enable it for cases where even an approximate location is sensitive.
+
+### What it does and does not guarantee
+
+- It is **tamper-evident, not tamper-proof.** Editing the picture changes the
+  digest (`tampered`); scrubbing the hidden bits leaves no watermark
+  (`no-watermark`) — either way the photo does not verify as authentic.
+- Trust comes from the ledger: only a payload registered there verifies as
+  `authentic`. A self-made watermark is reported `unregistered`.
+- The watermark is **lost if the photo is re-compressed or resized** (JPEG/WebP,
+  screenshots, most messaging apps). Verify the original uploaded file.
+- To keep the hidden data intact, watermarked photos are stored as **lossless
+  PNG**, so they are larger than the default WebP/JPEG output.
+- It carries no user identity: only a timestamp, a random nonce, hashes and (if
+  opted in) a coarse location.
 
 ## What Is Not Collected
 
@@ -63,7 +103,8 @@ The server and Soroban contract never see the original file, its GPS, or its cam
 
 - Processor: `src/lib/imageProcessor.ts` (`processImage()`, `stripExifFromBuffer()`, `calculateTargetSize()`)
 - UI: `src/features/help/CreateRequestModal.tsx` and `src/pages/Help.tsx` (`Help.jsx`)
-- Tests: `test/image-processor.test.js` (EXIF detection, stripping, 1200px cap, 80% quality, savings)
+- Watermark: `src/lib/watermark.ts` (`applyWatermark()`, `verifyWatermark()`)
+- Tests: `test/image-processor.test.js` (EXIF detection, stripping, 1200px cap, 80% quality, savings), `test/watermark.test.js`
 - Config: `vite.config.ts` / `vite.config.js` (canvas/WASM optimizations)
 
 ## Your Rights

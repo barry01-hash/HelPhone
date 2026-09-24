@@ -11,12 +11,40 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
+      # Postgres connection. Migrations apply automatically at server startup
+      # (see server/db/migrator.ts), so the schema always stays in sync.
+      - key: DATABASE_URL
+        value: fromEnv
+        sync: false
       - key: SOROBAN_RPC_URL
         value: "https://soroban-testnet.stellar.org"
       - key: CONTRACT_ID
         value: "CC325F37QW7N2F5M3QGHL4A4O7J2K9L0M1N2O3P4Q5R6S7T8U9V0"
+      # Rate-limit whitelist (#536): verified emergency-service subnets / API keys
+      # are stored in Redis and managed via /admin/whitelist (see docs/security-runbook.md).
+      - key: REDIS_URL
+        sync: false
+      - key: WHITELIST_ADMIN_TOKEN
+        sync: false
+      # Number of proxy hops in front of the app so req.ip is the real client.
+      - key: TRUST_PROXY
+        value: "1"
+      # Automated VACUUM ANALYZE / REINDEX CONCURRENTLY (#538) — opt-in; see docs/database-architecture.md
+      - key: DB_MAINTENANCE_ENABLED
+        value: "false"
+      - key: DB_BLOAT_THRESHOLD_PCT
+        value: "20"
+      - key: DB_MAINTENANCE_WINDOW_START_UTC
+        value: "2"
+      - key: DB_MAINTENANCE_WINDOW_END_UTC
+        value: "5"
       - key: ALLOWED_ORIGINS
         value: "https://helphone.com,https://staging.helphone.com,http://localhost:3000"
+      # Keep-alive: must stay above Render's 60s balancer idle timeout (server/middleware/keepAlive.ts)
+      - key: KEEP_ALIVE_TIMEOUT_MS
+        value: "65000"
+      - key: HEADERS_TIMEOUT_MS
+        value: "66000"
 
   - type: cron
     name: soroban-daily-state-exporter
@@ -25,6 +53,9 @@ services:
     buildCommand: npm install
     startCommand: bash scripts/export-contract-state.sh
     envVars:
+      - key: DATABASE_URL
+        value: fromEnv
+        sync: false
       - key: SOROBAN_RPC_URL
         value: "https://soroban-testnet.stellar.org"
       - key: CONTRACT_ID

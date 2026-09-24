@@ -1,6 +1,7 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { swChannel, subscribeToServiceWorkerMessages } from "../lib/swChannel";
 
-export function useRequestMapState({ defaultCenter }) {
+export function useRequestMapState({ defaultCenter, onContractEvent }) {
   const [requestId, setRequestId] = useState(null);
   const [requestStatus, setRequestStatus] = useState("idle");
   const [submitting, setSubmitting] = useState(false);
@@ -31,6 +32,23 @@ export function useRequestMapState({ defaultCenter }) {
     () => Array.from(openRequests.values()),
     [openRequests],
   );
+
+  // Issue #516: subscribe to cross-tab contract update events so a request /
+  // responder change made in another tab (or polled by the leader tab) refreshes
+  // this view instantly instead of waiting for the next local poll interval.
+  useEffect(() => {
+    if (typeof onContractEvent !== "function") return undefined;
+    const handleMessage = (message) => {
+      if (message?.type !== "CONTRACT_EVENT") return;
+      onContractEvent(message.payload);
+    };
+    const unsubChannel = swChannel.subscribe(handleMessage);
+    const unsubSw = subscribeToServiceWorkerMessages(handleMessage);
+    return () => {
+      unsubChannel();
+      unsubSw();
+    };
+  }, [onContractEvent]);
 
   const syncSettledViewport = useCallback((event) => {
     const viewState = event?.viewState;

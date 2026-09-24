@@ -124,10 +124,39 @@ self.addEventListener('fetch', (event) => {
 });
 
 self.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'CRDT_SYNC') {
-    event.waitUntil(fetch('/api/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(event.data.payload) }))
+  const data = event.data || {};
+
+  // CRDT sync: forward the local state change to the backend sync endpoint.
+  if (data.type === 'CRDT_SYNC') {
+    event.waitUntil(
+      fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(data.payload),
+      })
+    );
   }
-  if (event.data && event.data.type === 'SKIP_WAITING') {
+
+  // Contract update events and CRDT/state sync (issue #516): reflect the
+  // message to every other open window client so a single leader's poll or
+  // SSE result reaches all tabs without each tab owning a subscription.
+  if (data.type === 'CONTRACT_EVENT' || data.type === 'CRDT_SYNC' || data.type === 'STATE_SYNC') {
+    event.waitUntil(
+      self.clients
+        .matchAll({ type: 'window', includeUncontrolled: true })
+        .then((clients) => {
+          return Promise.all(
+            clients.map((client) => {
+              if (client === event.source) return Promise.resolve();
+              return client.postMessage({ ...data, source: data.source || 'service-worker' });
+            })
+          );
+        })
+        .catch(() => {})
+    );
+  }
+
+  if (data.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }
 });

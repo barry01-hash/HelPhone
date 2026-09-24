@@ -153,26 +153,48 @@ export default defineConfig(({ mode }) => ({
       output: {
         manualChunks(id) {
           if (!id.includes("node_modules")) return undefined;
-          if (id.includes("mapbox-gl") || id.includes("react-map-gl"))
-            return "mapbox";
-          if (
-            id.includes("@stellar/stellar-sdk") ||
-            id.includes("stellar-wallets-kit")
-          )
-            return "stellar";
+
+          // WASM binaries - isolate for lazy loading
+          if (id.includes(".wasm") || id.includes("barretenberg") || id.includes("acvm"))
+            return "zk-wasm";
+
+          // ZK/Noir libraries - heavy, lazy-loaded
           if (id.includes("@noir-lang") || id.includes("@aztec/bb.js"))
             return "zk";
+
+          // Mapbox GL - heavy map rendering
+          if (id.includes("mapbox-gl") || id.includes("react-map-gl"))
+            return "mapbox";
+
+          // Stellar SDK - blockchain interactions
           if (
-            id.includes("react") ||
+            id.includes("@stellar/stellar-sdk") ||
+            id.includes("stellar-wallets-kit") ||
+            id.includes("soroban-client")
+          )
+            return "stellar";
+
+          // React core - critical path
+          if (
             id.includes("react-dom") ||
             id.includes("react-router") ||
-            id.includes("scheduler") ||
-            id.includes("react-i18next") ||
-            id.includes("i18next")
+            id.includes("scheduler")
           )
-            return "react-vendor";
-          if (id.includes("@supabase")) return "supabase";
-          if (id.includes("buffer")) return "buffer";
+            return "react-core";
+
+          // i18n - can be deferred
+          if (id.includes("react-i18next") || id.includes("i18next"))
+            return "i18n";
+
+          // Supabase - backend client
+          if (id.includes("@supabase"))
+            return "supabase";
+
+          // Buffer polyfill
+          if (id.includes("buffer"))
+            return "buffer";
+
+          // Everything else
           return "vendor";
         },
       },
@@ -206,7 +228,7 @@ export default defineConfig(({ mode }) => ({
       "@noir-lang/noirc_abi",
       "@aztec/bb.js",
     ],
-    include: ["buffer"],
+    include: ["buffer", "fuse.js"],
   },
   worker: {
     format: "es",

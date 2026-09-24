@@ -28,6 +28,7 @@ import {
   updateLocation,
   recordExpertVerification,
 } from "../lib/contract";
+import { NetworkStatusIndicator } from "../components/NetworkStatusIndicator.jsx";
 import {
   buildLocationProofZone,
   generateLocationProof,
@@ -2334,6 +2335,8 @@ export default function Help() {
               </div>
             )}
           </div>
+
+          <NetworkStatusIndicator />
 
           {isGetMode && (
             <>

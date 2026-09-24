@@ -35,3 +35,100 @@ jobs:
 
       - name: Execute Soroban State Export Verification Script
         run: bash scripts/export-contract-state.sh
+
+  database-migrations:
+    name: Schema Migrations (Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: helphone_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/helphone_test
+
+  # Network throttling matrix (CDP): one leg per profile so a regression names the network class it breaks on
+  e2e-throttling:
+    name: E2E throttling (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ['2g', '3g', 'cap-500kbps', 'offline']
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci || npm install
+
+      - name: Apply Schema Migrations (idempotent run)
+        run: npm run db:migrate
+
+      - name: Verify migrations recorded as applied
+        run: |
+          node -e "
+            const { Client } = require('pg');
+            const { readdirSync } = require('fs');
+            (async () => {
+              const c = new Client({ connectionString: process.env.DATABASE_URL });
+              await c.connect();
+              const want = readdirSync('migrations').filter((f) => f.endsWith('.sql')).sort();
+              const r = await c.query('SELECT filename FROM schema_migrations ORDER BY filename');
+              const have = r.rows.map((x) => x.filename);
+              const missing = want.filter((f) => !have.includes(f));
+              if (missing.length) throw new Error('migrations not applied: ' + missing.join(', '));
+              console.log('applied:', have.join(', '));
+              await c.end();
+            })().catch((e) => { console.error(e); process.exit(1); });
+          "
+
+      - name: Verify schema objects exist (RLS + indexes)
+        run: |
+          node -e "
+            const { Client } = require('pg');
+            (async () => {
+              const c = new Client({ connectionString: process.env.DATABASE_URL });
+              await c.connect();
+              const r = await c.query(
+                \"SELECT relname FROM pg_class WHERE relrowsecurity = true AND relkind = 'r' ORDER BY relname\"
+              );
+              const tables = r.rows.map((x) => x.relname);
+              const expected = ['contract_events', 'expert_verifications', 'requests', 'responders'];
+              const missing = expected.filter((t) => !tables.includes(t));
+              if (missing.length) throw new Error('RLS not enabled on: ' + missing.join(', '));
+              const idx = await c.query(
+                \"SELECT indexname FROM pg_indexes WHERE tablename = 'contract_events'\"
+              );
+              console.log('RLS tables:', tables.join(', '));
+              console.log('contract_events indexes:', idx.rows.map((x) => x.indexname).join(', '));
+              await c.end();
+            })().catch((e) => { console.error(e); process.exit(1); });
+          "
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run throttling profile
+        run: npm run test:e2e:throttling -- --grep "\\[${{ matrix.profile }}\\]"
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: throttling-${{ matrix.profile }}
+          path: test-results/

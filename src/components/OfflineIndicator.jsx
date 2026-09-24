@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react';
+import { swChannel, subscribeToServiceWorkerMessages } from '../lib/swChannel';
 
 export default function OfflineIndicator() {
-  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [isOnline, setIsOnline] = useState(
+    typeof navigator !== 'undefined' ? navigator.onLine : true,
+  );
+  const [lastSyncAt, setLastSyncAt] = useState(null);
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -10,13 +14,32 @@ export default function OfflineIndicator() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
+    // Issue #516: surface multi-tab synchronisation activity while offline —
+    // a request state change saved in another tab propagates to this one.
+    const handleMessage = (message) => {
+      if (
+        message?.type === 'CONTRACT_EVENT' ||
+        message?.type === 'CRDT_SYNC' ||
+        message?.type === 'STATE_SYNC'
+      ) {
+        setLastSyncAt(message.timestamp || Date.now());
+      }
+    };
+    const unsubChannel = swChannel.subscribe(handleMessage);
+    const unsubSw = subscribeToServiceWorkerMessages(handleMessage);
+
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      unsubChannel();
+      unsubSw();
     };
   }, []);
 
   if (isOnline) return null;
+
+  const syncedRecently =
+    lastSyncAt != null && Date.now() - lastSyncAt < 60_000;
 
   return (
     <div
@@ -37,7 +60,13 @@ export default function OfflineIndicator() {
       role="alert"
       aria-live="polite"
     >
-      ⚠️ You are offline. Some features may not be available. Cached data will be used where possible.
+      ⚠️ You are offline. Some features may not be available. Cached data will be
+      used where possible.
+      {syncedRecently && (
+        <span style={{ opacity: 0.85, marginLeft: 8 }}>
+          Multi-tab sync active — updates received just now.
+        </span>
+      )}
     </div>
   );
 }

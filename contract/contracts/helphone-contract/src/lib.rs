@@ -24,6 +24,23 @@ pub use multisig::{Proposal, ProposalAction};
 //   ("resp", request_id, idx) → ResponderRecord
 //   ("evcount", wallet) → u32      verification count per wallet
 //   ("ev", wallet, idx) → ExpertVerification
+//
+// ── Footprint contract (client mirror: src/lib/footprint.ts, issue #517) ──
+// The JS client inspects each invocation's storage footprint via an RPC
+// simulateTransaction call before any user signature, then caches the returned
+// read-only / read-write ledger-key set in memory and reuses it for identical
+// repeat invocations.
+//
+//   * mark_arrived / resolve_request / cancel_request touch only
+//     ("req", id) / ("resp", request_id, responder_index) — fully determined
+//     by the function arguments, so the client pre-bakes their footprint.
+//   * create_request / accept_request / record_expert_verification append to
+//     counter/slot keys whose values depend on on-chain state; their footprint
+//     is left to the pre-sign simulation to derive.
+//
+// Both checks read config from the instance/"admin" slot; multisig state lives
+// in the multisig module (multisig::configuration). Keep this map in sync with
+// any storage key added here.
 
 fn key_admin() -> soroban_sdk::Symbol {
     symbol_short!("admin")

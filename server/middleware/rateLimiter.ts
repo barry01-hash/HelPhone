@@ -1,4 +1,5 @@
 import { rateLimit } from 'express-rate-limit'
+import { isWhitelisted } from './whitelist.js'
 
 /**
  * General API rate limiter — applied to all routes.
@@ -9,6 +10,8 @@ export const generalLimiter = rateLimit({
   max: 100,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  // Verified emergency-service callers (see whitelist.ts) are never throttled.
+  skip: isWhitelisted,
   message: {
     success: false,
     error: 'Too many requests — please slow down and try again shortly.',
@@ -27,6 +30,8 @@ export const proverLimiter = rateLimit({
   max: 10,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  // Verified emergency-service callers (see whitelist.ts) are never throttled.
+  skip: isWhitelisted,
   message: {
     success: false,
     error: 'ZK prover rate limit exceeded — at most 10 proofs per minute per IP.',

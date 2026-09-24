@@ -96,6 +96,52 @@ Wraps `PoolManager` with environment-aware defaults and a fallback mock client s
 
 Run: `npm test -- test/db-pool.test.js`
 
+## Automated Maintenance: `server/db/maintenance.ts`
+
+Dead tuples left by UPDATE/DELETE bloat tables and slow scans. The scheduler
+vacuums and re-indexes bloated tables during a low-traffic window.
+
+### How it works
+
+1. Every `DB_MAINTENANCE_INTERVAL_MS` (default 15 min) a tick runs.
+2. It does nothing outside the UTC window `[DB_MAINTENANCE_WINDOW_START_UTC,
+   DB_MAINTENANCE_WINDOW_END_UTC)` (default 02:00–05:00; may wrap midnight).
+3. It reads `pg_stat_user_tables` and computes
+   `dead% = n_dead_tup / (n_live_tup + n_dead_tup) × 100` per table.
+4. Each table above `DB_BLOAT_THRESHOLD_PCT` (default **20**) and with at least
+   `DB_MAINTENANCE_MIN_TUPLES` (default 1000) tuples, worst first, gets
+   `VACUUM (ANALYZE) "schema"."table"` then
+   `REINDEX TABLE CONCURRENTLY "schema"."table"`. A table is re-indexed at most
+   once per `DB_REINDEX_COOLDOWN_MS` (default 7 days, tracked in memory).
+
+### Non-blocking guarantees
+
+- Plain `VACUUM` is used, **never `VACUUM FULL`**: it takes no exclusive lock, so
+  reads and writes continue. (PostgreSQL has no `VACUUM ... CONCURRENTLY`.)
+- `REINDEX ... CONCURRENTLY` (PostgreSQL 12+) rebuilds indexes without blocking
+  writes. It is slower and uses extra disk while running; if it fails it can
+  leave an `INVALID` index behind (`\d table`), which should be dropped and retried.
+- Both statements are rejected inside a transaction block, so they are sent one
+  at a time on a dedicated pooled client (`withClient` in `connection.ts`).
+- Runs are single-flight; a slow pass makes later ticks skip rather than pile up.
+  One table failing is logged and does not stop the rest.
+
+### Config
+
+| Env | Default | Description |
+|-----|---------|-------------|
+| `DB_MAINTENANCE_ENABLED` | `false` | Opt-in switch |
+| `DB_BLOAT_THRESHOLD_PCT` | `20` | Dead-tuple % that triggers maintenance |
+| `DB_MAINTENANCE_WINDOW_START_UTC` | `2` | Window opens (hour, inclusive) |
+| `DB_MAINTENANCE_WINDOW_END_UTC` | `5` | Window closes (hour, exclusive) |
+| `DB_MAINTENANCE_INTERVAL_MS` | `900000` | Tick interval |
+| `DB_REINDEX_COOLDOWN_MS` | `604800000` | Min gap between re-indexes of a table |
+| `DB_MAINTENANCE_MIN_TUPLES` | `1000` | Skip tiny tables |
+
+Invalid values fall back to the default. `pg_stat_user_tables` counters are
+estimates, so the percentage is approximate. Per-table autovacuum tuning is
+still the first line of defence; this is a backstop.
+
 ## Logger Integration: `server/middleware/logger.ts`
 
 Structured JSON logger that optionally attaches pool stats (`?pool=1` or `DEBUG_POOL=true`). Also exposes `poolMonitorMiddleware` to attach `res.locals.poolStats`.

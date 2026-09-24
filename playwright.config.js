@@ -20,6 +20,14 @@ export default defineConfig({
     timeout: 30_000,
   },
   projects: [
-    { name: 'chromium', use: { browserName: 'chromium' } },
+    // Throttling runs in its own project: slow-network navigations need a much
+    // larger timeout and would make the default suite crawl.
+    { name: 'chromium', testIgnore: /throttling\.spec\.ts/, use: { browserName: 'chromium' } },
+    {
+      name: 'throttling',
+      testMatch: /throttling\.spec\.ts/,
+      timeout: 180_000,
+      use: { browserName: 'chromium' },
+    },
   ],
 })

@@ -1,5 +1,53 @@
-export default function CommunityMap() {
+import { useEffect, useRef, useState } from "react";
+import { createOverlayRenderer } from "../lib/offscreenCanvas.ts";
+
+const MAP_WIDTH = 1140;
+const MAP_HEIGHT = 540;
+
+/**
+ * `overlays` (optional): markers animated on a canvas layered over the SVG.
+ * The canvas is rendered by a Web Worker via OffscreenCanvas where supported,
+ * so the animation is unaffected by main-thread work. `onRenderStats` receives
+ * the measured frame rate once per second.
+ */
+export default function CommunityMap({ overlays, onRenderStats }) {
+  const canvasRef = useRef(null);
+  const rendererRef = useRef(null);
+  const statsRef = useRef(onRenderStats);
+  statsRef.current = onRenderStats;
+  // A canvas whose control was transferred can't be reused; bump the key to
+  // remount a fresh one in main-thread mode if the worker dies.
+  const [mountKey, setMountKey] = useState(0);
+  const [forceMain, setForceMain] = useState(false);
+  const hasOverlay = overlays !== undefined;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!hasOverlay || !canvas) return undefined;
+    const renderer = createOverlayRenderer(canvas, {
+      width: MAP_WIDTH,
+      height: MAP_HEIGHT,
+      dpr: Math.min(window.devicePixelRatio || 1, 2),
+      forceMainThread: forceMain,
+      onStats: (s) => statsRef.current?.(s),
+      onError: () => {
+        setForceMain(true);
+        setMountKey((k) => k + 1);
+      },
+    });
+    rendererRef.current = renderer;
+    return () => {
+      renderer.destroy();
+      rendererRef.current = null;
+    };
+  }, [hasOverlay, mountKey, forceMain]);
+
+  useEffect(() => {
+    rendererRef.current?.setOverlays(overlays ?? []);
+  }, [overlays, mountKey, forceMain]);
+
   return (
+    <div style={{ position: "relative", width: "100%" }}>
     <svg
       viewBox="0 0 1140 540"
       style={{
@@ -209,5 +257,21 @@ export default function CommunityMap() {
         REQUEST 04:12
       </text>
     </svg>
+    {hasOverlay && (
+      <canvas
+        key={mountKey}
+        ref={canvasRef}
+        aria-hidden="true"
+        data-testid="map-overlay-canvas"
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          pointerEvents: "none",
+        }}
+      />
+    )}
+    </div>
   );
 }

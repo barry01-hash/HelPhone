@@ -10,16 +10,27 @@
  * sanitize the output buffer by not copying original bytes.
  */
 
+import { applyWatermark } from './watermark';
+import type { WatermarkOptions, WatermarkResult, WatermarkContext } from './watermark';
+
 export const MAX_DIMENSION = 1200;
 export const DEFAULT_QUALITY = 0.8;
 export const OUTPUT_TYPE: 'image/webp' | 'image/jpeg' = 'image/webp';
 export const FALLBACK_TYPE = 'image/jpeg';
+/** Watermarked images are encoded losslessly: LSB data does not survive JPEG/WebP. */
+export const WATERMARK_TYPE = 'image/png';
 
 export interface ProcessOptions {
   maxDimension?: number;
   quality?: number;
   outputType?: string;
   stripExif?: boolean;
+  /**
+   * Stamp a visible overlay and an invisible steganographic watermark (see
+   * watermark.ts). Forces lossless PNG output — larger files, but the only
+   * encoding that preserves the embedded payload.
+   */
+  watermark?: WatermarkOptions;
 }
 
 export interface ProcessResult {
@@ -34,6 +45,8 @@ export interface ProcessResult {
   exifStripped: boolean;
   outputType: string;
   quality: number;
+  /** Present when `watermark` was requested; register `watermark.id` on the ledger. */
+  watermark?: WatermarkResult;
 }
 
 /** Detect if a buffer contains EXIF (APP1 with Exif\0\0). */
@@ -178,7 +191,8 @@ export async function processImage(
 ): Promise<ProcessResult> {
   const maxDimension = opts.maxDimension ?? MAX_DIMENSION;
   const quality = opts.quality ?? DEFAULT_QUALITY;
-  let outputType = opts.outputType ?? OUTPUT_TYPE;
+  const watermarkOpts = opts.watermark;
+  let outputType = watermarkOpts ? WATERMARK_TYPE : (opts.outputType ?? OUTPUT_TYPE);
 
   const originalSize = file.size;
   if (originalSize === 0) throw new Error('Empty file');
@@ -201,7 +215,8 @@ export async function processImage(
     (ctx as CanvasRenderingContext2D).imageSmoothingEnabled = true;
     (ctx as CanvasRenderingContext2D).imageSmoothingQuality = 'high';
     // White background for JPEG (avoids black for transparent PNGs)
-    if (outputType === 'image/jpeg' || outputType === FALLBACK_TYPE) {
+    // Watermarking needs opaque pixels (premultiplied alpha would corrupt the LSBs).
+    if (watermarkOpts || outputType === 'image/jpeg' || outputType === FALLBACK_TYPE) {
       (ctx as CanvasRenderingContext2D).fillStyle = '#ffffff';
       (ctx as CanvasRenderingContext2D).fillRect(0, 0, target.width, target.height);
     } else {
@@ -213,15 +228,26 @@ export async function processImage(
       0, 0, target.width, target.height
     );
 
+    let watermark: WatermarkResult | undefined;
+    if (watermarkOpts) {
+      watermark = await applyWatermark(ctx as unknown as WatermarkContext, target.width, target.height, watermarkOpts);
+    }
+
     // Try requested type, fallback to jpeg if not supported
     let blob: Blob;
-    try {
-      blob = await canvasToBlob(canvas, outputType, quality);
-      // Some browsers return png when webp not supported — detect and fallback
-      if (outputType === 'image/webp' && blob.type !== 'image/webp') throw new Error('WebP not supported');
-    } catch {
-      outputType = FALLBACK_TYPE;
-      blob = await canvasToBlob(canvas, outputType, quality);
+    if (watermarkOpts) {
+      // Lossless only: never fall back to a lossy type, which would silently destroy the watermark.
+      blob = await canvasToBlob(canvas, WATERMARK_TYPE, 1);
+      if (blob.type !== WATERMARK_TYPE) throw new Error('PNG encoding is required for watermarking but is unavailable');
+    } else {
+      try {
+        blob = await canvasToBlob(canvas, outputType, quality);
+        // Some browsers return png when webp not supported — detect and fallback
+        if (outputType === 'image/webp' && blob.type !== 'image/webp') throw new Error('WebP not supported');
+      } catch {
+        outputType = FALLBACK_TYPE;
+        blob = await canvasToBlob(canvas, outputType, quality);
+      }
     }
 
     // Ensure EXIF is stripped: re-encode already stripped, but for JPEG also run buffer sanitizer
@@ -249,6 +275,7 @@ export async function processImage(
       exifStripped: hadExif, // true if original had EXIF and we removed it via canvas
       outputType,
       quality,
+      ...(watermark ? { watermark } : {}),
     };
   } finally {
     close?.();

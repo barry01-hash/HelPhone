@@ -1,4 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { searchCities } from "../lib/geocoder.ts";
+
+function mapboxSearchUrl(query, token, { limit = 5, autocomplete = true } = {}) {
+  const params = new URLSearchParams({
+    access_token: token,
+    autocomplete: autocomplete ? "true" : "false",
+    limit: String(limit),
+  });
+  return `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?${params}`;
+}
+
+function canUseNetwork() {
+  return typeof navigator === "undefined" || navigator.onLine !== false;
+}
 
 function makeCancellationToken() {
   let cancelled = false;
@@ -59,16 +73,33 @@ export function useLocationSearch({ mapboxToken }) {
     const timeout = setTimeout(async () => {
       try {
         setSearchSuggestLoading(true);
-        const res = await token.wrap(
-          fetch(
-            `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery.trim())}.json?access_token=${mapboxToken}&autocomplete=true&limit=5`,
-            { signal: controller.signal },
-          ),
-        );
-        const data = res !== undefined ? await res.json() : null;
-        if (data) {
-          setSearchSuggestions(data.features || []);
+        let features = [];
+        if (canUseNetwork() && mapboxToken) {
+          try {
+            const res = await token.wrap(
+              fetch(mapboxSearchUrl(searchQuery.trim(), mapboxToken, { limit: 5 }), {
+                signal: controller.signal,
+              }),
+            );
+            const data = res !== undefined ? await res.json() : null;
+            features = data?.features || [];
+          } catch {
+            // Mapbox failed (offline, token missing, network error) — the
+            // offline geocoder below takes over.
+            features = [];
+          }
+        }
+        if (features.length === 0) {
+          // Offline fallback (#518): fuzzy city search over the bundled
+          // dataset. Results are Mapbox-shaped so the UI is unchanged.
+          const offlineHits = await token.wrap(searchCities(searchQuery.trim(), { limit: 5 }));
+          features = offlineHits || [];
+        }
+        if (features.length) {
+          setSearchSuggestions(features);
           setActiveSuggestion(-1);
+        } else if (token.active) {
+          setSearchSuggestions([]);
         }
       } catch {
         if (token.active) setSearchSuggestions([]);
@@ -149,24 +180,41 @@ export function useLocationSearch({ mapboxToken }) {
     setSearchError("");
     setSearchSuggestions([]);
     setSearchLoading(true);
+    let features = [];
+    let online = true;
     try {
-      const res = await fetch(
-        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(q)}.json?access_token=${mapboxToken}&limit=1`,
-        { signal: controller.signal },
-      );
-      const data = await res.json();
-      if (!data.features?.length) {
-        setSearchError("Place not found.");
+      if (canUseNetwork() && mapboxToken) {
+        try {
+          const res = await fetch(
+            mapboxSearchUrl(q, mapboxToken, { limit: 1, autocomplete: false }),
+            { signal: controller.signal },
+          );
+          const data = await res.json();
+          features = data.features || [];
+        } catch (err) {
+          if (err?.name === "AbortError") return;
+          // Network blip or Mapbox outage — fall through to offline search.
+          online = false;
+        }
+      } else if (canUseNetwork()) {
+        online = false; // no access token configured — offline dataset is authoritative
+      }
+      if (features.length === 0) {
+        const hits = await searchCities(q, { limit: 1 });
+        features = hits;
+      }
+      if (!features.length) {
+        setSearchError(online ? "Place not found." : "Place not found offline.");
         setSearchLoading(false);
         return;
       }
-      const [lng, lat] = data.features[0].center;
+      const [lng, lat] = features[0].center;
       setLocation([lat, lng]);
       setLocationError("");
       setSearchSuggestions([]);
     } catch (err) {
       if (err?.name !== "AbortError") {
-        setSearchError("Search failed. Check your connection.");
+        setSearchError(online ? "Search failed. Check your connection." : "Search failed offline.");
       } else {
         return;
       }

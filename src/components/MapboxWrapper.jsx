@@ -1,6 +1,7 @@
-import { forwardRef, useEffect, useRef } from "react";
+import { forwardRef, useEffect, useRef, useState } from "react";
 import Map, { NavigationControl } from "react-map-gl/mapbox";
 import "mapbox-gl/dist/mapbox-gl.css";
+import { searchCities, isOffline } from "../lib/geocoder.ts";
 
 /**
  * MapboxWrapper (#87)
@@ -50,12 +51,40 @@ const MapboxWrapper = forwardRef(function MapboxWrapper(
     showNavigationControl = true,
     navigationControlPosition = "bottom-right",
     style = FILL_PARENT,
+    onProviderChange,
     children,
     ...rest
   },
   ref,
 ) {
   const internalRef = useRef(null);
+  const [provider, setProvider] = useState("online");
+  const providerRef = useRef(provider);
+  providerRef.current = provider;
+
+  // #518: fall back to the offline geocoder when Mapbox can't serve tiles —
+  // detect via navigator.onLine and notify callers so they swap the search
+  // suggestions source. (`onMapError` on `<Map>` also flips the flag if the
+  // tile/style request itself fails while the network looks fine.)
+  useEffect(() => {
+    const update = () => {
+      const next = isOffline() || !(accessToken ?? DEFAULT_TOKEN) ? "offline" : "online";
+      if (next !== providerRef.current) {
+        setProvider(next);
+      }
+    };
+    update();
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }, [accessToken]);
+
+  useEffect(() => {
+    onProviderChange?.(provider);
+  }, [provider, onProviderChange]);
 
   useEffect(() => {
     return () => {
@@ -72,6 +101,10 @@ const MapboxWrapper = forwardRef(function MapboxWrapper(
     };
   }, []);
 
+  // Expose the offline geocoder so page-level search UIs can query it directly
+  // when the provider flips to offline.
+  const offlineSearch = provider === "offline" ? searchCities : null;
+
   return (
     <Map
       ref={(mapInstance) => {
@@ -87,12 +120,17 @@ const MapboxWrapper = forwardRef(function MapboxWrapper(
       style={style}
       mapStyle={mapStyle}
       onClick={onMapClick}
+      onError={() => {
+        if (providerRef.current !== "offline") {
+          setProvider("offline");
+        }
+      }}
       {...rest}
     >
       {showNavigationControl && (
         <NavigationControl position={navigationControlPosition} />
       )}
-      {children}
+      {offlineSearch && typeof children === "function" ? children({ provider, searchCities: offlineSearch }) : children}
     </Map>
   );
 });

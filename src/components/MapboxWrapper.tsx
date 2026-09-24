@@ -1,6 +1,7 @@
-import { forwardRef } from 'react'
+import { forwardRef, useEffect, useRef, useState } from 'react'
 import Map, { NavigationControl } from 'react-map-gl/mapbox'
 import 'mapbox-gl/dist/mapbox-gl.css'
+import { searchCities, isOffline } from '../lib/geocoder.ts'
 
 /**
  * MapboxWrapper (#87)
@@ -23,6 +24,7 @@ interface MapboxWrapperProps {
   accessToken?: string
   showNavigationControl?: boolean
   onIsolationChange?: (isolated: boolean) => void
+  onProviderChange?: (provider: 'online' | 'offline') => void
   navigationControlPosition?: 'top-right' | 'top-left' | 'bottom-right' | 'bottom-left'
   style?: React.CSSProperties
   children?: React.ReactNode
@@ -38,12 +40,41 @@ const MapboxWrapper = forwardRef<unknown, MapboxWrapperProps>(function MapboxWra
     showNavigationControl = true,
     navigationControlPosition = 'bottom-right',
     onIsolationChange,
+    onProviderChange,
     style = FILL_PARENT,
     children,
     ...rest
   },
   ref,
 ) {
+  const [provider, setProvider] = useState<'online' | 'offline'>('online')
+  const providerRef = useRef(provider)
+  providerRef.current = provider
+
+  // #518: fall back to the offline geocoder when Mapbox can't serve tiles —
+  // detect via navigator.onLine and notify callers so they swap the search
+  // suggestions source. (`onMapError` on `<Map>` also flips the flag if the
+  // tile/style request itself fails while the network looks fine.)
+  useEffect(() => {
+    const update = () => {
+      const next = isOffline() || !(accessToken ?? DEFAULT_TOKEN) ? 'offline' : 'online'
+      if (next !== providerRef.current) {
+        setProvider(next)
+      }
+    }
+    update()
+    window.addEventListener('online', update)
+    window.addEventListener('offline', update)
+    return () => {
+      window.removeEventListener('online', update)
+      window.removeEventListener('offline', update)
+    }
+  }, [accessToken])
+
+  useEffect(() => {
+    if (typeof onProviderChange === 'function') onProviderChange(provider)
+  }, [provider, onProviderChange])
+
   return (
     <Map
       // @ts-expect-error ref forwarding for react-map-gl
@@ -54,12 +85,17 @@ const MapboxWrapper = forwardRef<unknown, MapboxWrapperProps>(function MapboxWra
       onLoad={() => onIsolationChange?.(globalThis.crossOriginIsolated === true)}
       mapStyle={mapStyle}
       onClick={onMapClick}
+      onError={() => {
+        if (providerRef.current !== 'offline') setProvider('offline')
+      }}
       {...rest}
     >
       {showNavigationControl && (
         <NavigationControl position={navigationControlPosition} />
       )}
-      {children}
+      {provider === 'offline' && typeof children === 'function'
+        ? (children as (ctx: { provider: 'online' | 'offline'; searchCities: typeof searchCities }) => React.ReactNode)({ provider, searchCities })
+        : children}
     </Map>
   )
 })
